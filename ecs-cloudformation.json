@@ -1,173 +1,187 @@
 {
-	"AWSTemplateFormatVersion": "2010-09-09",
-	"Description": "ECS Fargate Nginx with optional reuse of existing VPC/subnets/SG",
-	"Parameters": {
-	  "EnvironmentName": {
-		"Type": "String",
-		"Default": "nginx-env"
-	  },
-	  "Project": {
-		"Type": "String",
-		"Default": "nginx-demo"
-	  },
-	  "Owner": {
-		"Type": "String",
-		"Default": "owner@example.com"
-	  },
-	  "ExistingVpcId": {
-		"Type": "AWS::EC2::VPC::Id",
-		"Default": "",
-		"Description": "If provided, reuse this VPC; otherwise a new VPC is created"
-	  },
-	  "ExistingPublicSubnetIds": {
-		"Type": "List<AWS::EC2::Subnet::Id>",
-		"Default": "",
-		"Description": "Comma-separated list of 2 public subnet IDs to reuse; otherwise new subnets are created"
-	  },
-	  "ExistingSecurityGroupId": {
-		"Type": "AWS::EC2::SecurityGroup::Id",
-		"Default": "",
-		"Description": "If provided, reuse existing Security Group; otherwise a new one is created"
-	  }
-	},
-	"Conditions": {
-	  "UseExistingVpc": { "Fn::Not": [ { "Fn::Equals": [ { "Ref": "ExistingVpcId" }, "" ] } ] },
-	  "UseExistingSubnets": { "Fn::Not": [ { "Fn::Equals": [ { "Ref": "ExistingPublicSubnetIds" }, "" ] } ] },
-	  "UseExistingSG": { "Fn::Not": [ { "Fn::Equals": [ { "Ref": "ExistingSecurityGroupId" }, "" ] } ] }
-	},
-	"Resources": {
-	  "VPC": {
-		"Type": "AWS::EC2::VPC",
-		"Condition": "UseExistingVpc",
-		"Properties": {
-		  "CidrBlock": "10.0.0.0/16",
-		  "EnableDnsSupport": true,
-		  "EnableDnsHostnames": true,
-		  "Tags": [
-			{ "Key": "Name", "Value": { "Fn::Sub": "${EnvironmentName}-vpc" } },
-			{ "Key": "Environment", "Value": { "Ref": "EnvironmentName" } }
-		  ]
-		}
-	  },
-	  "PublicSubnetA": {
-		"Type": "AWS::EC2::Subnet",
-		"Condition": "UseExistingSubnets",
-		"Properties": {
-		  "VpcId": { "Ref": "VPC" },
-		  "CidrBlock": "10.0.1.0/24",
-		  "AvailabilityZone": { "Fn::Select": [ 0, { "Fn::GetAZs": "" } ] },
-		  "MapPublicIpOnLaunch": true,
-		  "Tags": [{ "Key": "Name", "Value": { "Fn::Sub": "${EnvironmentName}-public-a" } }]
-		}
-	  },
-	  "PublicSubnetB": {
-		"Type": "AWS::EC2::Subnet",
-		"Condition": "UseExistingSubnets",
-		"Properties": {
-		  "VpcId": { "Ref": "VPC" },
-		  "CidrBlock": "10.0.2.0/24",
-		  "AvailabilityZone": { "Fn::Select": [ 1, { "Fn::GetAZs": "" } ] },
-		  "MapPublicIpOnLaunch": true,
-		  "Tags": [{ "Key": "Name", "Value": { "Fn::Sub": "${EnvironmentName}-public-b" } }]
-		}
-	  },
-	  "SecurityGroup": {
-		"Type": "AWS::EC2::SecurityGroup",
-		"Condition": "UseExistingSG",
-		"Properties": {
-		  "VpcId": { "Fn::If": [ "UseExistingVpc", { "Ref": "ExistingVpcId" }, { "Ref": "VPC" } ] },
-		  "GroupDescription": "Allow HTTP",
-		  "SecurityGroupIngress": [{
-			"IpProtocol": "tcp", "FromPort": 80, "ToPort": 80, "CidrIp": "0.0.0.0/0"
-		  }],
-		  "Tags": [
-			{ "Key": "Name", "Value": { "Fn::Sub": "${EnvironmentName}-sg" } }
-		  ]
-		}
-	  },
-	  "ECSCluster": {
-		"Type": "AWS::ECS::Cluster",
-		"Properties": {
-		  "ClusterName": { "Fn::Sub": "${EnvironmentName}-cluster" }
-		}
-	  },
-	  "ExecutionRole": {
-		"Type": "AWS::IAM::Role",
-		"Properties": {
-		  "AssumeRolePolicyDocument": {
-			"Version": "2012-10-17",
-			"Statement": [{
-			  "Effect": "Allow",
-			  "Principal": { "Service": "ecs-tasks.amazonaws.com" },
-			  "Action": "sts:AssumeRole"
-			}]
-		  },
-		  "ManagedPolicyArns": [ "arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy" ]
-		}
-	  },
-	  "LogGroup": {
-		"Type": "AWS::Logs::LogGroup",
-		"Properties": { "LogGroupName": { "Fn::Sub": "/ecs/${EnvironmentName}-nginx" }, "RetentionInDays": 30 }
-	  },
-	  "TaskDefinition": {
-		"Type": "AWS::ECS::TaskDefinition",
-		"Properties": {
-		  "Family": { "Fn::Sub": "${EnvironmentName}-nginx" },
-		  "RequiresCompatibilities": [ "FARGATE" ],
-		  "Cpu": "256", "Memory": "512",
-		  "NetworkMode": "awsvpc",
-		  "ExecutionRoleArn": { "Fn::GetAtt": [ "ExecutionRole", "Arn" ] },
-		  "ContainerDefinitions": [{
-			"Name": "nginx", "Image": "nginx:latest", "Essential": true,
-			"PortMappings": [{ "ContainerPort": 80, "Protocol": "tcp" }],
-			"LogConfiguration": {
-			  "LogDriver": "awslogs",
-			  "Options": {
-				"awslogs-group": { "Ref": "LogGroup" },
-				"awslogs-region": { "Ref": "AWS::Region" },
-				"awslogs-stream-prefix": "nginx"
-			  }
-			}
-		  }]
-		}
-	  },
-	  "Service": {
-		"Type": "AWS::ECS::Service",
-		"Properties": {
-		  "Cluster": { "Ref": "ECSCluster" },
-		  "TaskDefinition": { "Ref": "TaskDefinition" },
-		  "DesiredCount": 2,
-		  "LaunchType": "FARGATE",
-		  "NetworkConfiguration": {
-			"AwsvpcConfiguration": {
-			  "AssignPublicIp": "ENABLED",
-			  "SecurityGroups": [
-				{ "Fn::If": [ "UseExistingSG", { "Ref": "ExistingSecurityGroupId" }, { "Ref": "SecurityGroup" } ] }
-			  ],
-			  "Subnets": {
-				"Fn::If": [
-				  "UseExistingSubnets",
-				  { "Ref": "ExistingPublicSubnetIds" },
-				  [ { "Ref": "PublicSubnetA" }, { "Ref": "PublicSubnetB" } ]
-				]
-			  }
-			}
-		  }
-		}
-	  }
-	},
-	"Outputs": {
-	  "VpcId": {
-		"Value": { "Fn::If": [ "UseExistingVpc", { "Ref": "ExistingVpcId" }, { "Ref": "VPC" } ] }
-	  },
-	  "PublicSubnetIds": {
-		"Value": { "Fn::If": [ "UseExistingSubnets", { "Ref": "ExistingPublicSubnetIds" }, { "Fn::Join": [ ",", [ { "Ref": "PublicSubnetA" }, { "Ref": "PublicSubnetB" } ] ] } ] }
-	  },
-	  "SecurityGroupId": {
-		"Value": { "Fn::If": [ "UseExistingSG", { "Ref": "ExistingSecurityGroupId" }, { "Ref": "SecurityGroup" } ] }
-	  },
-	  "ClusterName": { "Value": { "Ref": "ECSCluster" } },
-	  "ServiceName": { "Value": { "Ref": "Service" } }
-	}
+  "AWSTemplateFormatVersion": "2010-09-09",
+  "Description": "ECS Cluster with NGINX on EC2 using reusable resources",
+  "Parameters": {
+    "EnvironmentName": {
+      "Type": "String",
+      "Default": "dev"
+    },
+    "Project": {
+      "Type": "String",
+      "Default": "nginx-demo"
+    },
+    "Owner": {
+      "Type": "String",
+      "Default": "admin"
+    },
+    "VpcCIDR": {
+      "Type": "String",
+      "Default": "10.0.0.0/16"
+    },
+    "PublicSubnetCIDR": {
+      "Type": "String",
+      "Default": "10.0.1.0/24"
+    }
+  },
+  "Conditions": {
+    "IsDev": {
+      "Fn::Equals": [
+        { "Ref": "EnvironmentName" },
+        "dev"
+      ]
+    }
+  },
+  "Resources": {
+    "VPC": {
+      "Type": "AWS::EC2::VPC",
+      "Properties": {
+        "CidrBlock": { "Ref": "VpcCIDR" },
+        "EnableDnsSupport": true,
+        "EnableDnsHostnames": true,
+        "Tags": [
+          { "Key": "Name", "Value": { "Fn::Sub": "${Project}-vpc" } }
+        ]
+      }
+    },
+    "InternetGateway": {
+      "Type": "AWS::EC2::InternetGateway",
+      "Properties": {
+        "Tags": [
+          { "Key": "Name", "Value": { "Fn::Sub": "${Project}-igw" } }
+        ]
+      }
+    },
+    "VPCGatewayAttachment": {
+      "Type": "AWS::EC2::VPCGatewayAttachment",
+      "Properties": {
+        "VpcId": { "Ref": "VPC" },
+        "InternetGatewayId": { "Ref": "InternetGateway" }
+      }
+    },
+    "PublicSubnet": {
+      "Type": "AWS::EC2::Subnet",
+      "Properties": {
+        "VpcId": { "Ref": "VPC" },
+        "CidrBlock": { "Ref": "PublicSubnetCIDR" },
+        "MapPublicIpOnLaunch": true,
+        "Tags": [
+          { "Key": "Name", "Value": { "Fn::Sub": "${Project}-public-subnet" } }
+        ]
+      }
+    },
+    "PublicRouteTable": {
+      "Type": "AWS::EC2::RouteTable",
+      "Properties": {
+        "VpcId": { "Ref": "VPC" },
+        "Tags": [
+          { "Key": "Name", "Value": { "Fn::Sub": "${Project}-public-rt" } }
+        ]
+      }
+    },
+    "PublicRoute": {
+      "Type": "AWS::EC2::Route",
+      "Properties": {
+        "RouteTableId": { "Ref": "PublicRouteTable" },
+        "DestinationCidrBlock": "0.0.0.0/0",
+        "GatewayId": { "Ref": "InternetGateway" }
+      }
+    },
+    "SubnetRouteTableAssociation": {
+      "Type": "AWS::EC2::SubnetRouteTableAssociation",
+      "Properties": {
+        "RouteTableId": { "Ref": "PublicRouteTable" },
+        "SubnetId": { "Ref": "PublicSubnet" }
+      }
+    },
+    "SecurityGroup": {
+      "Type": "AWS::EC2::SecurityGroup",
+      "Properties": {
+        "VpcId": { "Ref": "VPC" },
+        "GroupDescription": "Allow HTTP and SSH access",
+        "SecurityGroupIngress": [
+          {
+            "IpProtocol": "tcp",
+            "FromPort": 80,
+            "ToPort": 80,
+            "CidrIp": "0.0.0.0/0"
+          },
+          {
+            "IpProtocol": "tcp",
+            "FromPort": 22,
+            "ToPort": 22,
+            "CidrIp": "0.0.0.0/0"
+          }
+        ],
+        "Tags": [
+          { "Key": "Name", "Value": { "Fn::Sub": "${Project}-sg" } }
+        ]
+      }
+    },
+    "ECSCluster": {
+      "Type": "AWS::ECS::Cluster",
+      "Properties": {
+        "ClusterName": { "Fn::Sub": "${Project}-ecs-cluster" },
+        "Tags": [
+          { "Key": "Environment", "Value": { "Ref": "EnvironmentName" } },
+          { "Key": "Project", "Value": { "Ref": "Project" } },
+          { "Key": "Owner", "Value": { "Ref": "Owner" } }
+        ]
+      }
+    },
+    "ExecutionRole": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Principal": {
+                "Service": [ "ecs-tasks.amazonaws.com" ]
+              },
+              "Action": [ "sts:AssumeRole" ]
+            }
+          ]
+        },
+        "ManagedPolicyArns": [
+          "arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
+        ],
+        "RoleName": { "Fn::Sub": "${Project}-ecs-execution-role" },
+        "Tags": [
+          { "Key": "Environment", "Value": { "Ref": "EnvironmentName" } },
+          { "Key": "Project", "Value": { "Ref": "Project" } },
+          { "Key": "Owner", "Value": { "Ref": "Owner" } }
+        ]
+      }
+    },
+    "LogGroup": {
+      "Type": "AWS::Logs::LogGroup",
+      "Properties": {
+        "LogGroupName": { "Fn::Sub": "/ecs/${Project}" },
+        "RetentionInDays": 7
+      }
+    }
+  },
+  "Outputs": {
+    "VPCId": {
+      "Value": { "Ref": "VPC" },
+      "Description": "VPC ID"
+    },
+    "PublicSubnetId": {
+      "Value": { "Ref": "PublicSubnet" },
+      "Description": "Public Subnet ID"
+    },
+    "ClusterName": {
+      "Value": { "Ref": "ECSCluster" },
+      "Description": "ECS Cluster Name"
+    },
+    "ExecutionRoleArn": {
+      "Value": { "Fn::GetAtt": [ "ExecutionRole", "Arn" ] },
+      "Description": "Execution Role ARN"
+    },
+    "LogGroupName": {
+      "Value": { "Ref": "LogGroup" },
+      "Description": "CloudWatch Log Group"
+    }
   }
-  
+}
