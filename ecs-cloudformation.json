@@ -1,6 +1,6 @@
 {
   "AWSTemplateFormatVersion": "2010-09-09",
-  "Description": "ECS Fargate Cluster running NGINX",
+  "Description": "ECS Fargate Cluster running NGINX with exec command enabled",
   "Parameters": {
     "EnvironmentName": {
       "Type": "String",
@@ -130,7 +130,8 @@
           ]
         },
         "ManagedPolicyArns": [
-          "arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
+          "arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy",
+          "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
         ],
         "Tags": [
           { "Key": "Environment", "Value": { "Ref": "EnvironmentName" } },
@@ -187,6 +188,7 @@
       "Properties": {
         "Cluster": { "Ref": "ECSCluster" },
         "LaunchType": "FARGATE",
+        "EnableExecuteCommand": true,
         "DesiredCount": 1,
         "NetworkConfiguration": {
           "AwsvpcConfiguration": {

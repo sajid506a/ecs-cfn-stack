@@ -69,3 +69,14 @@ To delete all resources created by the stack:
 
 
 ./manage-stack.sh delete
+
+aws ecs list-tasks \
+  --cluster nginx-demo-cluster
+
+# 2. Exec into container
+aws ecs execute-command \
+  --cluster nginx-demo-cluster \
+  --task <task-id> \
+  --container nginx \
+  --command "/bin/bash" \
+  --interactive
