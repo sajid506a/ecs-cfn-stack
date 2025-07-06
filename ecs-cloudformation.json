@@ -1,6 +1,6 @@
 {
   "AWSTemplateFormatVersion": "2010-09-09",
-  "Description": "ECS Fargate Cluster running NGINX with exec command enabled",
+  "Description": "ECS Fargate Cluster with NGINX and ECS Exec support",
   "Parameters": {
     "EnvironmentName": {
       "Type": "String",
@@ -13,65 +13,51 @@
     "Owner": {
       "Type": "String",
       "Default": "admin"
-    },
-    "VpcCIDR": {
-      "Type": "String",
-      "Default": "10.0.0.0/16"
-    },
-    "PublicSubnetCIDR": {
-      "Type": "String",
-      "Default": "10.0.1.0/24"
     }
   },
   "Resources": {
-    "VPC": {
+    "Vpc": {
       "Type": "AWS::EC2::VPC",
       "Properties": {
-        "CidrBlock": { "Ref": "VpcCIDR" },
+        "CidrBlock": "10.0.0.0/16",
         "EnableDnsSupport": true,
         "EnableDnsHostnames": true,
-        "Tags": [
-          { "Key": "Name", "Value": { "Fn::Sub": "${Project}-vpc" } }
-        ]
-      }
-    },
-    "InternetGateway": {
-      "Type": "AWS::EC2::InternetGateway",
-      "Properties": {
-        "Tags": [
-          { "Key": "Name", "Value": { "Fn::Sub": "${Project}-igw" } }
-        ]
-      }
-    },
-    "VPCGatewayAttachment": {
-      "Type": "AWS::EC2::VPCGatewayAttachment",
-      "Properties": {
-        "VpcId": { "Ref": "VPC" },
-        "InternetGatewayId": { "Ref": "InternetGateway" }
+        "Tags": [{ "Key": "Name", "Value": "nginx-vpc" }]
       }
     },
     "PublicSubnet": {
       "Type": "AWS::EC2::Subnet",
       "Properties": {
-        "VpcId": { "Ref": "VPC" },
-        "CidrBlock": { "Ref": "PublicSubnetCIDR" },
+        "VpcId": { "Ref": "Vpc" },
+        "CidrBlock": "10.0.1.0/24",
+        "AvailabilityZone": { "Fn::Select": [0, { "Fn::GetAZs": "" }] },
         "MapPublicIpOnLaunch": true,
-        "Tags": [
-          { "Key": "Name", "Value": { "Fn::Sub": "${Project}-public-subnet" } }
-        ]
+        "Tags": [{ "Key": "Name", "Value": "nginx-public-subnet" }]
+      }
+    },
+    "InternetGateway": {
+      "Type": "AWS::EC2::InternetGateway",
+      "Properties": {
+        "Tags": [{ "Key": "Name", "Value": "nginx-igw" }]
+      }
+    },
+    "AttachGateway": {
+      "Type": "AWS::EC2::VPCGatewayAttachment",
+      "Properties": {
+        "VpcId": { "Ref": "Vpc" },
+        "InternetGatewayId": { "Ref": "InternetGateway" }
       }
     },
     "PublicRouteTable": {
       "Type": "AWS::EC2::RouteTable",
       "Properties": {
-        "VpcId": { "Ref": "VPC" },
-        "Tags": [
-          { "Key": "Name", "Value": { "Fn::Sub": "${Project}-public-rt" } }
-        ]
+        "VpcId": { "Ref": "Vpc" },
+        "Tags": [{ "Key": "Name", "Value": "nginx-public-rt" }]
       }
     },
     "PublicRoute": {
       "Type": "AWS::EC2::Route",
+      "DependsOn": "AttachGateway",
       "Properties": {
         "RouteTableId": { "Ref": "PublicRouteTable" },
         "DestinationCidrBlock": "0.0.0.0/0",
@@ -81,15 +67,15 @@
     "SubnetRouteTableAssociation": {
       "Type": "AWS::EC2::SubnetRouteTableAssociation",
       "Properties": {
-        "RouteTableId": { "Ref": "PublicRouteTable" },
-        "SubnetId": { "Ref": "PublicSubnet" }
+        "SubnetId": { "Ref": "PublicSubnet" },
+        "RouteTableId": { "Ref": "PublicRouteTable" }
       }
     },
     "SecurityGroup": {
       "Type": "AWS::EC2::SecurityGroup",
       "Properties": {
-        "VpcId": { "Ref": "VPC" },
-        "GroupDescription": "Allow HTTP access to ECS",
+        "GroupDescription": "Allow HTTP",
+        "VpcId": { "Ref": "Vpc" },
         "SecurityGroupIngress": [
           {
             "IpProtocol": "tcp",
@@ -98,20 +84,14 @@
             "CidrIp": "0.0.0.0/0"
           }
         ],
-        "Tags": [
-          { "Key": "Name", "Value": { "Fn::Sub": "${Project}-sg" } }
-        ]
+        "Tags": [{ "Key": "Name", "Value": "nginx-sg" }]
       }
     },
-    "ECSCluster": {
-      "Type": "AWS::ECS::Cluster",
+    "LogGroup": {
+      "Type": "AWS::Logs::LogGroup",
       "Properties": {
-        "ClusterName": { "Fn::Sub": "${Project}-cluster" },
-        "Tags": [
-          { "Key": "Environment", "Value": { "Ref": "EnvironmentName" } },
-          { "Key": "Project", "Value": { "Ref": "Project" } },
-          { "Key": "Owner", "Value": { "Ref": "Owner" } }
-        ]
+        "LogGroupName": "/ecs/nginx",
+        "RetentionInDays": 7
       }
     },
     "ExecutionRole": {
@@ -123,28 +103,41 @@
             {
               "Effect": "Allow",
               "Principal": {
-                "Service": [ "ecs-tasks.amazonaws.com" ]
+                "Service": "ecs-tasks.amazonaws.com"
               },
-              "Action": [ "sts:AssumeRole" ]
+              "Action": "sts:AssumeRole"
             }
           ]
         },
         "ManagedPolicyArns": [
-          "arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy",
-          "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
-        ],
-        "Tags": [
-          { "Key": "Environment", "Value": { "Ref": "EnvironmentName" } },
-          { "Key": "Project", "Value": { "Ref": "Project" } },
-          { "Key": "Owner", "Value": { "Ref": "Owner" } }
+          "arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
         ]
       }
     },
-    "LogGroup": {
-      "Type": "AWS::Logs::LogGroup",
+    "TaskRole": {
+      "Type": "AWS::IAM::Role",
       "Properties": {
-        "LogGroupName": { "Fn::Sub": "/ecs/${Project}" },
-        "RetentionInDays": 7
+        "AssumeRolePolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "ecs-tasks.amazonaws.com"
+              },
+              "Action": "sts:AssumeRole"
+            }
+          ]
+        },
+        "ManagedPolicyArns": [
+          "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
+        ]
+      }
+    },
+    "ECSCluster": {
+      "Type": "AWS::ECS::Cluster",
+      "Properties": {
+        "ClusterName": "nginx-cluster"
       }
     },
     "TaskDefinition": {
@@ -155,6 +148,7 @@
         "Memory": "512",
         "NetworkMode": "awsvpc",
         "ExecutionRoleArn": { "Fn::GetAtt": ["ExecutionRole", "Arn"] },
+        "TaskRoleArn": { "Fn::GetAtt": ["TaskRole", "Arn"] },
         "ContainerDefinitions": [
           {
             "Name": "nginx",
@@ -174,53 +168,44 @@
               }
             }
           }
-        ],
-        "Tags": [
-          { "Key": "Environment", "Value": { "Ref": "EnvironmentName" } },
-          { "Key": "Project", "Value": { "Ref": "Project" } },
-          { "Key": "Owner", "Value": { "Ref": "Owner" } }
         ]
       }
     },
-    "Service": {
+    "ECSService": {
       "Type": "AWS::ECS::Service",
-      "DependsOn": ["PublicRoute", "SubnetRouteTableAssociation"],
+      "DependsOn": ["AttachGateway"],
       "Properties": {
         "Cluster": { "Ref": "ECSCluster" },
-        "LaunchType": "FARGATE",
-        "EnableExecuteCommand": true,
         "DesiredCount": 1,
+        "LaunchType": "FARGATE",
+        "TaskDefinition": { "Ref": "TaskDefinition" },
+        "EnableExecuteCommand": true,
         "NetworkConfiguration": {
           "AwsvpcConfiguration": {
             "AssignPublicIp": "ENABLED",
-            "Subnets": [ { "Ref": "PublicSubnet" } ],
-            "SecurityGroups": [ { "Ref": "SecurityGroup" } ]
+            "Subnets": [{ "Ref": "PublicSubnet" }],
+            "SecurityGroups": [{ "Ref": "SecurityGroup" }]
           }
-        },
-        "TaskDefinition": { "Ref": "TaskDefinition" },
-        "Tags": [
-          { "Key": "Environment", "Value": { "Ref": "EnvironmentName" } },
-          { "Key": "Project", "Value": { "Ref": "Project" } },
-          { "Key": "Owner", "Value": { "Ref": "Owner" } }
-        ]
+        }
       }
     }
   },
   "Outputs": {
+    "ServiceName": {
+      "Description": "ECS Service Name",
+      "Value": { "Ref": "ECSService" }
+    },
     "ClusterName": {
+      "Description": "ECS Cluster Name",
       "Value": { "Ref": "ECSCluster" }
     },
-    "ServiceName": {
-      "Value": { "Ref": "Service" }
-    },
-    "TaskDefinitionArn": {
-      "Value": { "Ref": "TaskDefinition" }
+    "LogGroupName": {
+      "Description": "CloudWatch Log Group",
+      "Value": { "Ref": "LogGroup" }
     },
     "PublicSubnetId": {
+      "Description": "Public Subnet ID",
       "Value": { "Ref": "PublicSubnet" }
-    },
-    "SecurityGroupId": {
-      "Value": { "Ref": "SecurityGroup" }
     }
   }
 }
